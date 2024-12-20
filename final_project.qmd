@@ -1,0 +1,565 @@
+---
+title: "36-668: Final Project"
+subtitle: "Structural Topic Modeling as a Means of Comparing Love-Related Literature"
+author: "Andrew Shih"
+date: last-modified
+format:
+  pdf:
+    number-sections: true
+    indent: true
+    toc: true
+    include-in-header:
+      text: |
+        \addtokomafont{disposition}{\rmfamily}
+bibliography: references/cbe-2-refs.bib
+execute:
+  echo: false
+---
+
+# Abstract {.unnumbered}
+
+It is a commonly held notion that love is a universal concept, especially in literature, but there is a lack of research that studies differences in how it is portrayed across various dimensions. Existing studies characterize love geographically but do not apply their methods to other levels of analysis [@baumard2022existing]. Using corpora comprised of love poems and love letters, I used the `stm` package to perform structural topic modelling to detect clusters of topics that distinguish love-related literature along three selected dimensions: **era**, **genre**, and **authorship**. Running T-tests on these models showed that love is largely expressed similarly along different points of these dimensions, with minor exceptions. Future iterations of these methods applied onto other types of literature can give insight into whether love is truly universal in literature compared to other subjects.
+
+# Introduction
+
+While love is a universal human experience that appears as a literary theme across all eras and cultures, studies on how it varies across these stratifications are limited. More can be understood about what topics and motifs can distinguish love-related literature in **different eras**, **writing styles**, and **authorship types**. This study will compare pieces of love-related literature and identify the thematic and linguistic features that distinguish them across the dimensions mentioned above. As literature reflects societal values, examining how love is portrayed in relation to time, author gender, and literary genres can give a preliminary view into how broader historical contexts have influenced human notions of love.
+
+# Data
+
+This experiment has two corpora: the Love Poems corpus---containing **318** poems---and the Love Letters corpus---containing **90** letters. 
+
+## The Love Poems corpus
+
+A user on Kaggle by the username Ishnoor assembled a [dataset](https://www.google.com/url?q=https://www.kaggle.com/datasets/ishnoor/poetry-analysis-with-machine-learning?phase%3DFinishSSORegistration%26returnUrl%3D%252Fdatasets%252Fishnoor%252Fpoetry-analysis-with-machine-learning%252Fversions%252F1%253Fresource%253Ddownload%26SSORegistrationToken%3DCfDJ8CXYA35d3CRDujxBNSrCTMsLYG5jaKglRW2mMwHBmmnqtSlF4xZA1zpZazddAeTJK17wUpBDLIAj-c08Yhkaslwt1HrU_rZJv2IUycUGY8VQIupJfh9CaKAZCVdx5k90P4f0tR8KS8tbZVhUSMdi3nIuT-u7Ppg4DIAlPg7X9DnAUKsjS6IyBfJEPW6PTqRIiW0eznhHHrGZX0dFyXEDJX4X4jv9OPd4rQijvqz0bfICjgTqkuwoTIpiQOOibo1Z-9H6XaFKbOlR2sWyZC0ZOkYZJkElE4XjkP8Rc9JaBZfL_iaJP-K3uKusdREV1HmaHcDxwtjlz-z49x5y0eb84DrG2w%26DisplayName%3DAndrew%2BShih&sa=D&source=docs&ust=1732061371696384&usg=AOvVaw3OMaf0LOd9kEO8ZdV98dM-) [@ishnoor2017kaggle] containing poems from [poetryfoundation.org](https://www.poetryfoundation.org/) covering a wide variety of genres and associated metadata. After downloading the dataset as a CSV file, I filtered for poems in the love category to form the corpus I am using for this experiment. The corpus comprises metadata such that each text corresponds to a well-known author and the period in which it was written. poetryfoundation.org designated each poem as being from either the Renaissance or the Modern era, which disambiguates era classification.
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(quanteda)
+library(gt)
+library(quanteda.textstats)
+library(readtext)
+library(stm)
+library(tm)
+```
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+# source("~/Documents/MADS/Fa24/36-668 (Text Analysis)/textstat_tools-master/R/helper_functions.R")
+# load("~/Documents/MADS/Fa24/36-668 (Text Analysis)/textstat_tools-master/data/multiword_expressions.rda")
+
+love_poems_data <- read.csv("~/Documents/MADS/Fa24/36-668 (Text Analysis)/final_project/data/love_poems_corpus.csv") |>
+  select(-X)
+
+customstopwords = c("copyright", "reprinted", "permission", "published", "publishing", "corporation",
+                    "trust", "trustees",
+                    "hath", "thy", "thou", "thee", "thine", "doth")
+
+lp_processed <- textProcessor(love_poems_data$content, 
+                              metadata = love_poems_data, 
+                              stem = FALSE, 
+                              customstopwords = customstopwords,
+                              verbose = FALSE)
+
+# deciding generally not to lemmatize or stem words because verb tense and usage is also something I want to see has evolved or not
+# I do have to put in some customstopwords for some archaic words whose usage has evolved too much for stm to capture as being "the same word" as their modern form. 
+
+lp_out <- prepDocuments(lp_processed$documents, 
+                     lp_processed$vocab, 
+                     lp_processed$meta,
+                     lower.thresh = 15,
+                     verbose = FALSE)
+lp_docs <- lp_out$documents
+lp_vocab <- lp_out$vocab
+lp_meta <- lp_out$meta
+```
+
+```{r, echo = FALSE}
+#| label: tbl-1
+#| tbl-cap: "Breakdown of Poems and Tokens by Era"
+
+num_renaissance <- sum(love_poems_data$age == "Renaissance")
+num_modern <- sum(love_poems_data$age == "Modern")
+
+tokens_per_document <- sapply(lp_processed$documents, length)
+
+love_poems_ntoken <- cbind(lp_processed$meta, tokens_per_document)
+
+lp_corpus_comp <- love_poems_ntoken |>
+  group_by(age) %>%
+  summarize(
+    Texts = n(),
+    Tokens = sum(tokens_per_document)
+  )
+
+lp_corpus_comp |>
+  gt() |>
+  fmt_integer() |>
+  cols_label(
+    age = md("**Era**"),
+    Texts = md("**No. of Poems**"),
+    Tokens = md("**No. of Tokens**")
+  ) |>
+  grand_summary_rows(
+    columns = c(Texts, Tokens),
+    fns = list(
+      Total ~ sum(.)
+    ),
+    fmt = ~ fmt_integer(.)
+  )
+```
+
+[@tbl-1] shows the breakdown of poem and token volume across the two eras after pre-processing: 
+
+The corpus lacks diversity in certain areas. First, the poems are primarily written by English-language authors, so the corpus fails to capture variances that may arise due to differences in authors’ country of origin. Also, authorship skews heavily male: only $9\%$ of the corpus is female-authored. In a 2010 report published by the organization, VIDA: Women in Literary Arts, male-authored poetry outnumbers female-authored poetry 2-to-1 in the magazine, *Poetry* [@orourke2011]. The corpus exacerbates this gender imbalance. Because the gender of a poem’s author may be a confounder of the era it was written, discounting this imbalance could introduce unaccounted bias into the study. Lastly, the corpus contains multiple works from some authors while containing as little as one poem from other authors, which could lead to an overrepresentation of a particular writing style that could skew the results of this analysis.
+
+## The Love Letters corpus
+
+Kaggle user Sreeram Venkitesh created a [dataset](https://www.kaggle.com/datasets/fillerink/love-letters) [@sreeram2019kaggle] that scraped letters from [theromantic.com](https://theromantic.com/LoveLetters/main.htm) and [countryliving.com](https://www.countryliving.com/life/inspirational-stories/g4061/famous-love-letters/). To assemble the corpus, for each letter, I extracted its contents, added metadata about the author (as designated by the aforementioned websites), and included the author's gender (from external research). 
+
+```{r, echo = FALSE}
+love_letters_data <- read.csv("~/Documents/MADS/Fa24/36-668 (Text Analysis)/final_project/data/love_letters_corpus.csv") |>
+  select(-X)
+
+love_letters_data$gender <- c(
+  "F", "M", "F", "M", "M", "M", "M", "F", "M", 
+  "F", "M", "M", "M", "M", "M", "M", "M", "F", 
+  "M", "F", "M", "M", "F", "M", "M", "M", "M", 
+  "M", "M", "M", "M", "F", "M", "F", "F", "F", 
+  "F", "M", "M", "M", "M", "M", "F", "F", "F", 
+  "M", "M", "M", "M", "M", "M", "M", "M", "M", 
+  "M", "F", "M", "M", "M", "F", "M", "M", "F", 
+  "M", "F", "F", "M", "M", "M", "M", "M", "M", 
+  "M", "M", "M", "M", "M", "F", "M", "M", "M", 
+  "F", "M", "M", "M", "F", "F", "M", "F", "F"
+)
+```
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+# no custom stop words needed -- except one
+
+ll_processed <- textProcessor(love_letters_data$content, 
+                              metadata = love_letters_data, 
+                              stem = FALSE, 
+                              customstopwords = c("adele"),
+                              verbose = FALSE)
+# deciding not to lemmatize or stem words because verb tense and usage is also something I want to see differs between male vs. female or not
+
+ll_out <- prepDocuments(ll_processed$documents, 
+                     ll_processed$vocab, 
+                     ll_processed$meta,
+                     lower.thresh = 15,
+                     verbose = FALSE)
+ll_docs <- ll_out$documents
+ll_vocab <- ll_out$vocab
+ll_meta <- ll_out$meta
+```
+
+```{r, echo = FALSE}
+#| label: tbl-2
+#| tbl-cap: "Breakdown of Letters and Tokens by Gender"
+
+num_male <- sum(love_letters_data$gender == "F")
+num_female <- sum(love_letters_data$gender == "M")
+
+ll_tokens_per_document <- sapply(ll_processed$documents, length)
+
+love_letters_ntoken <- cbind(ll_processed$meta, ll_tokens_per_document)
+
+ll_corpus_comp <- love_letters_ntoken |>
+  group_by(gender) %>%
+  summarize(
+    Texts = n(),
+    Tokens = sum(ll_tokens_per_document)
+  )
+
+ll_corpus_comp |>
+  mutate(
+    gender = case_when(
+      gender == "F" ~ "Female",
+      gender == "M" ~ "Male",
+      TRUE ~ gender
+    )
+  ) |>
+  gt() |>
+  fmt_integer() |>
+  cols_label(
+    gender = md("**Gender**"),
+    Texts = md("**No. of Letters**"),
+    Tokens = md("**No. of Tokens**")
+  ) |>
+  grand_summary_rows(
+    columns = c(Texts, Tokens),
+    fns = list(
+      Total ~ sum(.)
+    ),
+    fmt = ~ fmt_integer(.)
+  )
+```
+
+[@tbl-2] shows the breakdown of letter and token volume across the male and female genders after pre-processing: 
+
+The corpus lacks diversity in certain areas. Again, authorship skews heavily male. In contrast to the Love Poems corpus, however, this corpus contains no more than 3 works from any one author, which is a more even distribution of individual authors and reduces the influence of any one writing style on the outcome of this analysis. 
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+love_poems_data$gender <- rep(NA, nrow(love_poems_data))
+love_poems_data$genre <- rep("Poem", nrow(love_poems_data))
+love_letters_data$genre <- rep("Letter", nrow(love_letters_data))
+  
+lp_ll_data <- rbind(love_poems_data, love_letters_data)
+
+genre_processed <- textProcessor(lp_ll_data$content, 
+                              metadata = lp_ll_data, 
+                              stem = FALSE, 
+                              customstopwords = c(customstopwords, "adele"),
+                              verbose = FALSE)
+# deciding not to lemmatize or stem words because verb tense and usage is also something I want to see differs across writing style
+
+genre_out <- prepDocuments(genre_processed$documents, 
+                     genre_processed$vocab, 
+                     genre_processed$meta,
+                     lower.thresh = 15,
+                     verbose = FALSE)
+genre_docs <- genre_out$documents
+genre_vocab <- genre_out$vocab
+genre_meta <- genre_out$meta
+```
+
+# Methods
+
+This study examined how sentiments about love differ along three dimensions: across periods, among author gender, and between literary genres. The first dimension was analyzed with the Love Poems corpus, the second dimension was analyzed with the Love Letters corpus, and the third dimension incorporated both corpora.  
+
+I used structural topic modeling (STM) for this analysis because it allowed me to incorporate document-level metadata (i.e. information about the era a poem was written) into the model, which is particularly beneficial for this study because there are already relatively few texts in the corpora. In particular, I used the `stm` package in R, which offers many customization options when modeling on topics. Unlike count- or frequency-based cluster analysis, STM recognizes that a word can have multiple meanings depending on its context. Thus, while a typical clustering algorithm (i.e. K-means clustering) could be used for the task at hand, STM improves upon it by providing more data to the model in a way that provides a more informed answer to the research question. Furthermore, topic models are mixture models, which assign probabilities to each text belonging to a particular “topic” identified by the model. STM uses Bayesian techniques to iteratively update the initially random probabilities, ensuring the results have as low bias as possible.
+
+My methods also inform what variables I chose to include in my dataset. The `stm()` method, which builds the topic model, has a `prevalence` argument that takes in a formula where I can specify the causal relationship between poem topical content and any metadata. For example, I included an `era` column to the Love Poems corpus so that all relevant data are consolidated in one dataset, making the workstream more efficient. A 2019 paper published in the *Journal of Statistical Software* provides a general walkthrough of how to use the `stm` package, as well as an application of it to the CMU 2008 Political Blog Corpus [@roberts2019stm]. The study contrasted topical content prevalence between Liberal- and Conservative-aligned blogs, which has a similar mechanical premise as my research question and supports my usage of the `stm` package on my dataset. 
+
+I primarily used the `tm` package, which has text mining functionalities suitable for text preprocessing. I decided not to lemmatize or stem tokens because verb tense and word forms hypothetically shift over time (for example, infinitives are used during one era, and present participles are used in another era), and I want to capture this linguistic effect in my results if it is true. For all 3 analyses, the stopwords I filtered out of the pool of tokens included common stopwords from the SMART stopword list. For the Love Poems corpus, there was additionally a set of unique stopwords I created to account for bibliographic information irrelevant to poem content or words too archaic for the `tm` package to recognize as being synonymous with their modern-day definitions (i.e. "hath", "doth", thou"). No custom stopword list was needed for the Love Letters corpus. I also filtered out words that did not appear in more than **15** poems, a relatively high threshold, to compensate for the relatively small dataset size.
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+lp_storage <- searchK(lp_out$documents, 
+                      lp_out$vocab, 
+                      K = seq(2, 15), 
+                      prevalence = ~ age, 
+                      data = lp_out$meta,
+                      heldout.seed = 888,
+                      verbose = FALSE)
+```
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+ll_storage <- searchK(ll_docs, 
+                      ll_vocab, 
+                      K = seq(2, 15), 
+                      prevalence = ~ gender, 
+                      data = ll_meta,
+                      heldout.seed = 888,
+                      verbose = FALSE)
+```
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+genre_storage <- searchK(genre_docs, 
+                      genre_vocab, 
+                      K = seq(2, 15), 
+                      prevalence = ~ genre, 
+                      data = genre_meta,
+                      heldout.seed = 888,
+                      verbose = FALSE)
+```
+
+```{r, echo = FALSE, fig.height=3, fig.width=9}
+#| label: fig-1
+#| fig-cap: "Exclusivity Increases as K Increases"
+
+par(mfrow=c(1, 3))
+
+plot(seq(2, 15),
+     lp_storage$results$exclus,
+     type = "b",
+     main = "Semantic Coherence and Exclusivity\nas a Function of the Number of Topics",
+     sub = "Time Period Comparison (Love Poems Corpus)", 
+     xlab = "Number of Topics (K)",
+     ylab = "Exclusivity")
+abline(v = 5, col = "red")
+
+plot(seq(2, 15),
+     ll_storage$results$exclus,
+     type = "b",
+     main = "Semantic Coherence and Exclusivity\nas a Function of the Number of Topics",
+     sub = "Gender Comparison (Love Letters Corpus)",
+     xlab = "Number of Topics (K)",
+     ylab = "Exclusivity")
+abline(v = 4, col = "red")
+
+plot(seq(2, 15),
+     genre_storage$results$exclus,
+     type = "b",
+     main = "Semantic Coherence and Exclusivity\nas a Function of the Number of Topics",
+     sub = "Genre Comparison (Love Poems and\nLove Letters Corpora)", 
+     xlab = "Number of Topics (K)",
+     ylab = "Exclusivity")
+abline(v = 5, col = "red")
+```
+
+```{r, echo = FALSE}
+lp_optimal_K <- 5
+```
+
+```{r, echo = FALSE}
+ll_optimal_K <- 4
+```
+
+```{r, echo = FALSE}
+genre_optimal_K <- 5
+```
+
+The `stm` package contains several methods I used to aid model selection, hyperparameter tuning, and model evaluation. I determined the optimal number of topics for my model using exclusivity as a metric. While semantic coherence and exclusivity are both valid metrics to evaluate a topic model, I chose to prioritize semantic coherence as it provides a more interpretable conclusion and better answers the research question. However, because semantic coherence usually always decreases as the number of topics in a model increases, I resorted to using exclusivity, which usually always increases, as a metric to decide the optimal number of topics to model with. I used the elbow method on the plots in [@fig-1] to pick the optimal number of topics for each analysis. For the period and genre comparisons, the optimal number was **5**. For the gender comparison, the optimal number was **4**. 
+
+Next, using the optimal number of topics found in the previous step, I used `stm` functionalities to select a model based on semantic coherence. The modeling process involved $20$ runs using Latent Dirichlet Allocation (the default process), where each run was given a maximum of $75$ iterations to reach convergence. These numbers were arbitrarily chosen at first, but I believed them to be appropriate as---for the period comparison study---$16$ of the $20$ runs converged before $75$ iterations, ensuring stability and robustness. For each analysis, I plotted exclusivity as a function of semantic coherence for the $4$ models with the highest likelihood in [@fig-2] to pick the "best" model, prioritizing semantic coherence.  
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, results="hide"}
+load("lpSelect.rda")
+# lpSelect <- selectModel(lp_docs,
+#                         lp_vocab,
+#                         K = lp_optimal_K,
+#                         prevalence = ~ age,
+#                         max.em.its = 75,
+#                         verbose = FALSE,
+#                         netverbose = FALSE,
+#                         data = lp_meta,
+#                         runs = 20,
+#                         seed = 888)
+# 
+# save(lpSelect, file = "~/Documents/MADS/Fa24/36-668 (Text Analysis)/textstat_tools-master/reports/lpSelect.rda")
+```
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+load("llSelect.rda")
+# llSelect <- selectModel(ll_docs,
+#                         ll_vocab,
+#                         K = ll_optimal_K,
+#                         prevalence = ~ gender,
+#                         max.em.its = 75,
+#                         verbose = FALSE,
+#                         data = ll_meta,
+#                         runs = 20,
+#                         seed = 888)
+# 
+# save(llSelect, file = "~/Documents/MADS/Fa24/36-668 (Text Analysis)/textstat_tools-master/reports/llSelect.rda")
+```
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+load("genreSelect.rda")
+# genreSelect <- selectModel(genre_docs,
+#                         genre_vocab,
+#                         K = genre_optimal_K,
+#                         prevalence = ~ genre,
+#                         max.em.its = 75,
+#                         verbose = FALSE,
+#                         data = genre_meta,
+#                         runs = 20,
+#                         seed = 888)
+# 
+# save(genreSelect, file = "~/Documents/MADS/Fa24/36-668 (Text Analysis)/textstat_tools-master/reports/genreSelect.rda")
+```
+
+```{r, fig.height = 3, fig.width=9, echo = FALSE, message = FALSE, warning = FALSE}
+#| label: fig-2
+#| fig-cap: "Selecting Among Candidate Models Based on Highest Semantic Coherence"
+
+par(mfrow=c(1, 3))
+plotModels(lpSelect, 
+           pch = c(1, 2, 3, 4),
+           legend.position = "bottomleft",
+           main = "Semantic Coherence vs. Exclusivity\nof Highest-Likelihood Models",
+           sub = "Time Period Comparison (Love Poems Corpus)",)
+
+plotModels(llSelect, 
+           pch = c(1, 2, 3, 4),
+           legend.position = "bottomleft",
+           main = "Semantic Coherence vs. Exclusivity\nof Highest-Likelihood Models",
+           sub = "Gender Comparison (Love Letters Corpus)")
+
+plotModels(genreSelect, 
+           pch = c(1, 2, 3, 4),
+           legend.position = "bottomleft",
+           main = "Semantic Coherence vs. Exclusivity\nof Highest-Likelihood Models",
+           sub = "Genre Comparison (Love Poems and Love Letters Corpora)")
+```
+
+```{r}
+selected_lp_model <- lpSelect$runout[[4]]
+selected_ll_model <- llSelect$runout[[4]]
+selected_genre_model <- genreSelect$runout[[3]]
+```
+
+For example, **Model 3** was chosen as the "best" model for the period comparison analysis. For each model selected, I then estimated a regression to determine whether the relationship between an era and the topics identified in the model is statistically significant.
+
+# Results
+
+The topics chosen by the "best" topic models for each study are exemplified in [@tbl-3], [@tbl-4], and [@tbl-5]. 
+\newpage
+```{r, echo = FALSE}
+#| label: tbl-3
+#| tbl-cap: "Time Comparison Study - Topics Chosen by the Optimal Models and Exemplary Words"
+ 
+lp_topics <- c("1 - Action and Agency", 
+            "2 - Related to Time", 
+            "3 - Idealization and Admiration", 
+            "4 - Conviction and Persistence", 
+            "5 - Possession and Movement")
+
+lp_top_words <- c("one, yet, let, make, might, give, face",
+               "now, like, see, time, still, whose, since",
+               "will, shall, eyes, can, may, fair, beauty",
+               "love, never, must, though, true, loves, well",
+               "heart, come, mine, say, thus, world, leave")
+
+lp_topic_data <- data.frame(Topic = lp_topics, Top_Words = lp_top_words)
+
+lp_topic_table <- lp_topic_data |>
+  gt() |>
+  cols_label(
+    Topic = "Topic",
+    Top_Words = "Top Words"
+  )
+
+lp_topic_table
+```
+
+```{r, echo = FALSE}
+#| label: tbl-4
+#| tbl-cap: "Gender Comparison Study - Topics Chosen by the Optimal Models and Exemplary Words"
+ll_topics <- c("1 - Emotion and Existentialism", 
+            "2 - Determination", 
+            "3 - Contemplation and Negation", 
+            "4 - Affection")
+
+ll_top_words <- c("heart, can, much, ever, life, now, god",
+               "will, shall, know, may, write, give, every",
+               "one, never, think, day, letter, feel, nothing",
+               "love, see, like, dear, little, long, without")
+
+ll_topic_data <- data.frame(Topic = ll_topics, Top_Words = ll_top_words)
+
+ll_topic_table <- ll_topic_data |>
+  gt() |>
+  cols_label(
+    Topic = "Topic",
+    Top_Words = "Top Words"
+  )
+
+ll_topic_table
+```
+
+```{r, echo = FALSE}
+#| label: tbl-5
+#| tbl-cap: "Genre Comparison Study - Topics Chosen by the Optimal Models and Exemplary Words"
+genre_topics <- c("1 - Contemplation and Action", 
+            "2 - Individuality and Agency", 
+            "3 - Commitment and Persistence", 
+            "4 - Aesthetic and Sensory Descriptions",
+            "5 - Reflection on the Inner Self")
+
+genre_top_words <- c("will, know, much, come, see, tell, think",
+               "one, can, now, shall, mine, well, long",
+               "love, let, never, must, since, day, true",
+               "yet, eyes, like, still, make, sweet, beauty",
+               "heart, may, fair, light, night, soul, mind")
+
+genre_topic_data <- data.frame(Topic = genre_topics, Top_Words = genre_top_words)
+
+genre_topic_table <- genre_topic_data |>
+  gt() |>
+  cols_label(
+    Topic = "Topic",
+    Top_Words = "Top Words"
+  )
+
+genre_topic_table
+```
+
+The following results assume the 3 regression models are correct and we use an $\alpha$ of 0.05 for all of them. 
+
+While there is a statistically significant relationship between the prevalences of the respective Topics 1-4 and the **era** in which a poem was written, there is a statistically insignificant relationship between the prevalence of Topic 5 and the **era**. For example, for Topic 2, there is a $95\%$ CI $[-0.153, -0.081]$, $p=6.76\times10^{-12}$ increase in topic proportion if a poem is a Renaissance-era one. A negative coefficient, in this case, represents higher prevalence in Modern-era poems, and vice versa. There is no statistically significant relationship between the prevalences of any of the respective topics and the **gender** of a letter's author. The prevalences of the respective Topics 1, 4, and 5 have a statistically significant relationship to the **genre** of the love-related literature, while the relationship is statistically insignificant for Topics 2 and 3. 
+
+[@fig-3] shows alternative views of these results. Taking the period comparison analysis as an example, Topics 1, 3, and 4 tend to appear more in Renaissance-era poems, while Topics 2 tends to appear more in Modern-era poems. Topic 5 straddles both eras.
+
+```{r, echo = FALSE}
+lp_prep <- estimateEffect(1:5 ~ age, selected_lp_model, meta = lp_meta, uncertainty = "Global")
+# summary(lp_prep)
+```
+
+```{r, echo = FALSE}
+ll_prep <- estimateEffect(1:4 ~ gender, selected_ll_model, meta = ll_meta, uncertainty = "Global")
+# summary(ll_prep)
+```
+
+```{r, echo = FALSE}
+genre_prep <- estimateEffect(1:5 ~ genre, selected_genre_model, meta = genre_meta, uncertainty = "Global")
+# summary(genre_prep)
+```
+
+```{r, fig.height=16, fig.width=10, echo=FALSE}
+#| label: fig-3
+#| fig-cap: "Contrasting Topical Prevalence on Different Dimensions"
+
+par(mfrow=c(3, 1))
+plot(lp_prep, 
+     covariate = "age", 
+     topics = seq(1, 5), 
+     model = selected_lp_model,
+     method = "difference", 
+     cov.value1 = "Renaissance", 
+     cov.value2 = "Modern", 
+     xlab = "More Modern ... More Renaissance\n(Difference in Topic Proportions)", 
+     main = "Effect of Renaissance vs. Modern", 
+     cex = 0.02,
+     xlim = c(-0.3, 0.3), 
+     labeltype = "prob")
+
+plot(ll_prep, 
+     covariate = "gender", 
+     topics = seq(1, 4), 
+     model = selected_ll_model,
+     method = "difference", 
+     cov.value1 = "M", 
+     cov.value2 = "F", 
+     xlab = "More Female ... More Male\n(Difference in Topic Proportions)", 
+     main = "Effect of Male vs. Female", 
+     cex = 0.02,
+     xlim = c(-0.3, 0.3),
+     labeltype = "prob")
+
+plot(genre_prep, 
+     covariate = "genre", 
+     topics = seq(1, 5), 
+     model = selected_genre_model,
+     method = "difference", 
+     cov.value1 = "Poem", 
+     cov.value2 = "Letter", 
+     xlab = "More Letter ... More Poem\n(Difference in Topic Proportions)", 
+     main = "Effect of Poem vs. Letter", 
+     cex = 0.02,
+     xlim = c(-0.35, 0.35), 
+     labeltype = "prob")
+```
+
+# Discussion
+
+The topics identified and the way that the exemplary words were grouped by the model are plausible in terms of relating them to love as a concept. For the **time period** comparison study, despite the t-tests showing statistically significant relationships between some of the topic proportions and the era in which a poem was written, the actual magnitudes of the topic proportion differences may not be large enough to have a practical impact. The most distinguishing topic (Topic 2 - Related to Time) can be explained by how Modern poetry is more concerned with describing the present moment and reflecting on the human experience than Renaissance poetry. Topics 1, 4, and 5 might lean more toward the Renaissance side to reflect the more ardent and classical aspects of longing and pursuing someone. One can surmise from the relatively small differences in topic proportions that the differences between Modern- and Renaissance-era poems are not substantial. 
+
+The results of the **gender** comparison study imply that male and female authors of love letters do not write substantially differently as all topics span both the Male and Female space in [@fig-3]. 
+
+In the **genre** comparison study, Topic 4 (Aesthetic and Sensory Descriptions) stands out as being more prevalent in poems, which reflect their more artistic and stylistic nature compared to letters. In contrast, Topic 1 (Contemplation and Action) stands out as being more prevalent in letters, which reflect their communicative and practical purposes. Across all three analyses, the differences in topic proportions for these two topics are the largest. While only two genres were compared in this analysis, it seems that love-related literature is the most discernible along the lines of genre. However, the relatively small mean topic proportion differences across all prominent topics reflect that love will generally transcend contexts and histories. Performing this same study on the literature of other subjects can provide a means of comparison to see if those other subjects are literarily universal.
+
+In a previous iteration of the **time period** comparison study, there was a topic that solely contained archaic words and leaned more toward the Renaissance side. Including archaic words in the custom stopword list has eliminated this topic, which leads me to believe that linguistic features will take precedence over topical features in these kinds of sentiment analyses. 
+
+A limitation of this study, however, is the narrowed focus of the **gender** study to just the Love Letters corpus (the study could have also included the Love Poems corpus). The usage of the `selectModel()` function in the `stm` package requires specifying a regression model. I lack the domain knowledge to truly know if there are interaction terms or confounding variables between gender and writing style (which is a variable that I would have to control on if I used both letters and poems in this analysis). While the results may not reflect differences in topic prevalence between genders across multiple genres, I achieved clearer findings for letter-style writing. To resolve this issue, future ANOVA tests can be used to compare regression models that differ by an interaction term to determine if the interaction term significantly contributes to explaining differences in topic prevalence. Collaboration with domain experts can also help determine the presence of such interaction terms and confounding variables.
+
+# Acknowledgments {.appendix}
+
+I want to acknowledge the paper “Academic phraseology; a key ingredient in successful L2 academic literacy” by Sylviane Granger for inspiring the nature of the research question in this experiment [@granger2017inspo].
+
+I also want to thank Dr. David Brown for introducing me to the `stm` package as a viable way to conduct the analysis above and providing general advice about the direction of the broader project.
+
+I want to acknowledge ChatGPT for helping me ideate topic names.
+
+# Works Cited
+
